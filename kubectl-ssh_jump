@@ -1,0 +1,296 @@
+#!/bin/bash
+
+set -euo pipefail
+
+declare -xr RED='\033[1;31m'
+declare -xr YELLOW='\033[1;33m'
+declare -xr GREEN='\033[1;32m'
+declare -xr BLUE='\033[1;34m'
+declare -xr LGREEN='\033[1;92m'
+declare -xr LYELLOW='\033[1;93m'
+declare -xr WHITE='\033[1;97m'
+declare -xr NC='\033[0m'
+
+SSH_USERNAME=""
+SSH_PORT=""
+SSH_IDENTITY_FILE=""
+SSH_OPTS=""
+DESTINATION_NODE=""
+
+PERSISTENT="no"
+CLEANUP=""
+TIMEOUT=""
+
+EXIT=1
+
+usage() {
+  cat <<EOF
+A kubectl plugin for ssh'ing to an instance under kubernetes host private networks
+
+Usage:
+  ssh-jump [flags] TARGET_NODE
+
+Examples:
+
+  # Use ssh key from selected file
+  ssh-jump -i ~/.ssh/id_rsa ip-10-0-10-217.ap-southeast-1.compute.internal
+
+  # Use ssh private key from ssh-agent
+  ssh-jump ip-10-0-10-217.ap-southeast-1.compute.internal
+
+Flags:
+  -h, --help           : show this message
+  -u, --username       : Target SSH username. Default "centos".
+  -p, --port           : Target SSH Port. Default "22".
+  -i, --identity-file  : Target SSH identity file.
+  -o, --ssh-opts       : SSH additional flags.
+  -P, --persistent     : Enable and/or use persistent ssh-jump pod. This flag is mutually exclusive with "--cleanup".
+  --cleanup            : Clean up ssh-jump if any. This flag is mutually exclusive with "--persistent". If both are specified, then this flag will take precedence.
+EOF
+
+  exit 0
+}
+
+sshpod_manifest() {
+  cat <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    ssh-jump.k8s.ardikabs.com/persistent: "${PERSISTENT}"
+  name: $1
+  namespace: default
+  labels:
+    app: ssh-jump
+    usage: jumper
+    persistent: "${PERSISTENT}"
+spec:
+  containers:
+  - name: ssh-jump
+    image: corbinu/ssh-server
+    ports:
+    - containerPort: 22
+      protocol: TCP
+    resources:
+      limits:
+        cpu: 200m
+        memory: 256Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+  restartPolicy: Never
+  tolerations:
+  - operator: Exists
+EOF
+}
+
+err() {
+  echo -e "${RED}Error:${NC} $*" >&2
+}
+
+errFlags() {
+  message=$1
+
+  err "$message"
+  echo -e "${YELLOW}Expected format:${NC} ${LGREEN}'ssh-jump [flags] TARGET_NODE'${NC}" >&2
+  exit 1
+}
+
+parseFlags() {
+
+  if [[ "$#" -eq 0 ]]; then
+    usage
+  elif [[ ! "$1" =~ ^- && "$#" -ge 2 ]]; then
+    errFlags "Invalid positional arguments"
+  fi
+
+  # Parsing flags
+  for arg in "$@"; do
+    skip=0
+    case $arg in
+    -h | --help)
+      usage
+      ;;
+    -u=* | --username=* | -u | --username)
+      if [[ "${arg#*=}" =~ ^- ]]; then
+        SSH_USERNAME="$2"
+        skip=2
+      else
+        SSH_USERNAME="${arg#*=}"
+        skip=1
+      fi
+      ;;
+    -p=* | --port=* | -p | --port)
+      if [[ "${arg#*=}" =~ ^- ]]; then
+        SSH_PORT="$2"
+        skip=2
+      else
+        SSH_PORT="${arg#*=}"
+        skip=1
+      fi
+      ;;
+    -i=* | --identity-file=* | -i | --identity-file)
+      if [[ "${arg#*=}" =~ ^- ]]; then
+        SSH_IDENTITY_FILE="-i $2"
+        skip=2
+      else
+        SSH_IDENTITY_FILE="-i ${arg#*=}"
+        skip=1
+      fi
+      ;;
+    -o=* | --ssh-opts=* | -o | --ssh-opts)
+      if [[ "${arg#*=}" =~ ^- ]]; then
+        SSH_OPTS="$2"
+        skip=2
+      else
+        SSH_OPTS="${arg#*=}"
+        skip=1
+      fi
+      ;;
+    --cleanup)
+      CLEANUP=yes
+      skip=1
+      ;;
+    -P | --persistent)
+      PERSISTENT=yes
+      skip=1
+      ;;
+    esac
+    shift $skip
+  done
+
+  # Parsing arguments
+  if [[ $# -eq 0 ]]; then
+    errFlags "You need to provide destination node to be ssh'ed"
+  elif [[ $# -gt 1 ]]; then
+    errFlags "Too many arguments"
+  fi
+
+  DESTINATION_NODE=$1
+  SSH_USERNAME=${SSH_USERNAME:-centos}
+  SSH_PORT=${SSH_PORT:-22}
+  SSH_IDENTITY_FILE=${SSH_IDENTITY_FILE}
+}
+
+_kubectl_delete() {
+  eval "kubectl delete pod $* -n default --force --grace-period=0  2> /dev/null"
+}
+
+terminateSSHPod() {
+
+  kill -2 "${pid_port_forward}" >/dev/null 2>&1
+
+  if [ "${TIMEOUT}" = "yes" ]; then
+    _kubectl_delete "${POD_NAME}"
+  elif [ "${CLEANUP}" = "yes" ]; then
+    echo ""
+    echo -e "Terminating ssh-jump Pods if any"
+    _kubectl_delete -l app=ssh-jump,usage=jumper
+  elif [[ "${PERSISTENT}" = "no" ]]; then
+    _kubectl_delete -l app=ssh-jump,usage=jumper,persistent=no
+  fi
+
+  exit $EXIT
+}
+
+provision_pod() {
+  MAX_POD_CREATION_TIME=${SSH_JUMP_TIMEOUT:-15}
+
+  pod_suffix=$(
+    head /dev/urandom | LC_ALL=C tr -dc a-z0-9 | head -c 7
+    echo ''
+  )
+  POD_NAME="sshjump-${pod_suffix}"
+
+  # Install a temporary SSH-server jumper
+  if [[ "${PERSISTENT}" = "yes" ]]; then
+    echo "Creating persistent SSH jump host (Pod)..."
+  else
+    echo "Creating SSH jump host (Pod)..."
+  fi
+
+  sshpod_manifest "${POD_NAME}" | kubectl apply -f -
+  trap terminateSSHPod SIGINT SIGTERM
+
+  # Wait until sshjump gets ready
+  c=1
+  while [[ "${c}" -le "${MAX_POD_CREATION_TIME}" ]]; do
+    pod_status="$(kubectl get pod "${POD_NAME}" -n default --no-headers -ocustom-columns=STATUS:.status.phase 2>/dev/null | head -n1)"
+    [ "${pod_status}" = "Running" ] && break
+
+    ((c++))
+    sleep 1
+
+    [[ ${c} -gt ${MAX_POD_CREATION_TIME} ]] && {
+      echo ""
+      echo -e "${RED}Error:${NC} Timeout exceeded (${MAX_POD_CREATION_TIME}s) while creating Pod ${POD_NAME}"
+      TIMEOUT=yes
+      terminateSSHPod
+    }
+  done
+}
+
+main() {
+  if [[ -z "${SSH_AUTH_SOCK:-}" ]]; then
+    err "Required \$SSH_AUTH_SOCK to be set"
+    exit 1
+  fi
+
+  parseFlags "$@"
+
+  if [ "${PERSISTENT}" = "yes" ]; then
+    POD_NAME=$(kubectl get pod -n default -l app=ssh-jump,usage=jumper,persistent=yes --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null | head -n1)
+
+    if [[ -z "${POD_NAME:-}" ]]; then
+      provision_pod
+    else
+      echo "Use existing SSH jump host (${POD_NAME})"
+    fi
+  else
+    provision_pod
+  fi
+
+  # Setup portforward
+  if [ "$(uname -s)" = Linux ]; then
+    RANDOM_PORT_FORWARDING=$(comm -23 <(seq 49152 65535 | sort) <(ss -Htan | awk '{print $4}' | cut -d':' -f2 | sort -u) | shuf | head -n 1 || true)
+  elif [ "$(uname -s)" = Darwin ]; then
+    RANDOM_PORT_FORWARDING=$(seq 49152 59152 | shuf | head -n 1 || true)
+  fi
+
+  kubectl port-forward -n default "${POD_NAME}" "${RANDOM_PORT_FORWARDING}":22 &
+  pid_port_forward=$!
+
+  sleep 5
+
+  output="$(ssh-add -L 2>/dev/null)"
+  if [[ "${output}" = "The agent has no identities." ]]; then
+    # Create a temporary ssh-key to ssh'ing into ssh-jump pod
+    if [[ ! -f /tmp/"${POD_NAME}" ]]; then
+      mkdir -p /tmp/.ssh-jump
+      ssh-keygen -b 2048 -t rsa -f /tmp/.ssh-jump/"${POD_NAME}" -N '' -C "ssh-jump:temporary" >/dev/null 2>&1
+    fi
+    ssh-add -t 30 -k /tmp/.ssh-jump/"${POD_NAME}" >/dev/null 2>&1
+  fi
+
+  ssh-add -L | kubectl exec -i "${POD_NAME}" -n default -- /bin/bash -c "cat > /root/.ssh/authorized_keys"
+
+  ssh_cmd="
+    ssh ${DESTINATION_NODE} \
+      ${SSH_IDENTITY_FILE} \
+      -l ${SSH_USERNAME} \
+      -p ${SSH_PORT} \
+      ${SSH_OPTS} \
+      -o ForwardAgent=yes \
+      -o ServerAliveInterval=60s \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -o ProxyCommand=\"ssh -q -W %h:%p root@127.0.0.1 -p ${RANDOM_PORT_FORWARDING}\"
+  "
+
+  eval "${ssh_cmd}"
+
+  EXIT=0
+  terminateSSHPod
+}
+
+main "$@"
