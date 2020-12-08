@@ -28,7 +28,12 @@ usage() {
 A kubectl plugin for ssh'ing to an instance under kubernetes host private networks
 
 Usage:
-  ssh-jump [flags] TARGET_NODE
+  ssh-jump [--help | -h] TARGET_NODE
+  ssh-jump [-CP] [-u=<ssh_username>|--username=<ssh_username>]
+           [-p=<ssh_port> | --port=<ssh_port>]
+           [-o=<ssh_opts> | --ssh-opts=<ssh_opts>]
+           [-i=<identity_file> | --identity-file=<identity_file>]
+           TARGET_NODE
 
 Examples:
 
@@ -45,7 +50,7 @@ Flags:
   -i, --identity-file  : Target SSH identity file.
   -o, --ssh-opts       : SSH additional flags.
   -P, --persistent     : Enable and/or use persistent ssh-jump pod. This flag is mutually exclusive with "--cleanup".
-  --cleanup            : Clean up ssh-jump if any. This flag is mutually exclusive with "--persistent". If both are specified, then this flag will take precedence.
+  -C, --cleanup            : Clean up ssh-jump if any. This flag is mutually exclusive with "--persistent". If both are specified, then this flag will take precedence.
 EOF
 
   exit 0
@@ -147,7 +152,7 @@ parseFlags() {
         skip=1
       fi
       ;;
-    --cleanup)
+    -C | --cleanup)
       CLEANUP=yes
       skip=1
       ;;

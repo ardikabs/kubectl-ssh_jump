@@ -22,15 +22,20 @@ $ ssh-jump --help
 A kubectl plugin for ssh'ing to an instance under kubernetes host private networks
 
 Usage:
-    ssh-jump [flags] TARGET_NODE
+  ssh-jump [--help | -h] TARGET_NODE
+  ssh-jump [-CP] [-u=<ssh_username>|--username=<ssh_username>]
+           [-p=<ssh_port> | --port=<ssh_port>]
+           [-o=<ssh_opts> | --ssh-opts=<ssh_opts>]
+           [-i=<identity_file> | --identity-file=<identity_file>]
+           TARGET_NODE
 
 Examples:
 
-    # Use ssh key from selected file
-    ssh-jump -i ~/.ssh/id_rsa ip-10-0-10-217.ap-southeast-1.compute.internal
+  # Use ssh key from selected file
+  ssh-jump -i ~/.ssh/id_rsa ip-10-0-10-217.ap-southeast-1.compute.internal
 
-    # Use ssh private key from ssh-agent
-    ssh-jump ip-10-0-10-217.ap-southeast-1.compute.internal
+  # Use ssh private key from ssh-agent
+  ssh-jump ip-10-0-10-217.ap-southeast-1.compute.internal
 
 Flags:
   -h, --help           : show this message
@@ -39,7 +44,7 @@ Flags:
   -i, --identity-file  : Target SSH identity file.
   -o, --ssh-opts       : SSH additional flags.
   -P, --persistent     : Enable and/or use persistent ssh-jump pod. This flag is mutually exclusive with "--cleanup".
-  --cleanup            : Clean up ssh-jump if any. This flag is mutually exclusive with "--persistent". If both are specified, then this flag will take precedence.
+  -C, --cleanup            : Clean up ssh-jump if any. This flag is mutually exclusive with "--persistent". If both are specified, then this flag will take precedence.
 ```
 
 ## SSH'ing to the target node
