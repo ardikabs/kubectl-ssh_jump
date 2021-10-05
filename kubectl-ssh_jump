@@ -21,7 +21,7 @@ PERSISTENT="no"
 CLEANUP=""
 TIMEOUT=""
 
-EXIT=1
+trap exit_handler EXIT
 
 usage() {
   cat <<EOF
@@ -181,9 +181,16 @@ _kubectl_delete() {
   eval "kubectl delete pod $* -n default --force --grace-period=0  2> /dev/null"
 }
 
-terminateSSHPod() {
+exit_handler () {
+  RC=$?
+  trap - EXIT
 
-  kill -2 "${pid_port_forward}" >/dev/null 2>&1
+  kill -2 "${pid_port_forward:-}" >/dev/null 2>&1 || true
+
+  exit $RC
+}
+
+terminateSSHPod() {
 
   if [ "${TIMEOUT}" = "yes" ]; then
     _kubectl_delete "${POD_NAME}"
@@ -195,7 +202,7 @@ terminateSSHPod() {
     _kubectl_delete -l app=ssh-jump,usage=jumper,persistent=no
   fi
 
-  exit $EXIT
+  return 0
 }
 
 provision_pod() {
@@ -267,14 +274,14 @@ main() {
 
   sleep 5
 
-  output="$(ssh-add -L 2>/dev/null)"
+  output="$(ssh-add -L 2>/dev/null || true)"
   if [[ "${output}" = "The agent has no identities." ]]; then
     # Create a temporary ssh-key to ssh'ing into ssh-jump pod
-    if [[ ! -f /tmp/"${POD_NAME}" ]]; then
+    if [[ ! -f /tmp/.ssh-jump/"${POD_NAME}" ]]; then
       mkdir -p /tmp/.ssh-jump
-      ssh-keygen -b 2048 -t rsa -f /tmp/.ssh-jump/"${POD_NAME}" -N '' -C "ssh-jump:temporary" >/dev/null 2>&1
+      ssh-keygen -b 2048 -t rsa -f /tmp/.ssh-jump/"${POD_NAME}" -N '' -C "ssh-jump:temporary"
     fi
-    ssh-add -t 30 -k /tmp/.ssh-jump/"${POD_NAME}" >/dev/null 2>&1
+    ssh-add -t 30 -k /tmp/.ssh-jump/"${POD_NAME}" || true
   fi
 
   ssh-add -L | kubectl exec -i "${POD_NAME}" -n default -- /bin/bash -c "cat > /root/.ssh/authorized_keys"
@@ -294,7 +301,6 @@ main() {
 
   eval "${ssh_cmd}"
 
-  EXIT=0
   terminateSSHPod
 }
 
