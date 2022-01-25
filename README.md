@@ -11,9 +11,12 @@ An extended version from [kubectl-ssh_jump](https://github.com/yokawasa/kubectl-
     $ mv kubectl-ssh_jump/kubectl-ssh_jump /usr/local/bin
     $ kubectl ssh-jump --help
     ```
-
+* Prerequisites for Linux/GNU OS
+  * [Installing `ss`](https://command-not-found.com/ss)
+* Prerequisites for MacOS
+  * [Installing `shuf`](https://command-not-found.com/shuf)
 # Disclaimer
-This script is a simple bash script and expect to run with `ss` command for Linux/GNU OS. Other than Linux/GNU OS, this script will randomized port between `49152 - 59152` to be used without any check, so it is expected in case picked port is already on used then script would be exit with non-zero status code and you need to re-run the script.
+This script is a simple bash script and expect to run with `ss` command for Linux/GNU OS. Other than Linux/GNU OS, this script will shuffle port between `49152 - 59152` to be used without any check, so it is expected in case picked port is already on used then script would be exit with non-zero status code and you need to re-run the script.
 
 # How-to
 ## Usage
